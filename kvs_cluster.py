@@ -68,16 +68,15 @@ def setup_server(node_id):
     app.add_routes(routes)
     return app.make_handler()
 
-def main(node_id, node, cluster, log_dir):
+def main(node_id, node, cluster, log_dir, benchmark):
     logging.basicConfig(
         filename=os.path.join(log_dir, 'node-{}-logging.log'.format(node_id)),
         format=u'[%(asctime)s %(filename)s:%(lineno)d %(levelname)s]  %(message)s',
-        level=logging.DEBUG
-        
+        level=logging.DEBUG if not benchmark else logging.ERROR
     )
 
     raftos.configure({
-        'log_path': './logs',
+        'log_path': log_dir,
         'serializer': raftos.serializers.JSONSerializer
     })
 
@@ -92,6 +91,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-n', '--num_nodes', type=int, default=3)
     parser.add_argument('-l', '--log_dir', default='./logs')
+    parser.add_argument('-b', '--benchmark', action='store_true')
     parser.add_argument('-r', '--remove', action='store_true')
     args = parser.parse_args()
 
@@ -103,7 +103,7 @@ if __name__ == '__main__':
     processes = set()
     try:
         for i, node in enumerate(cluster):
-            node_args = (i, node, cluster, args.log_dir)
+            node_args = (i, node, cluster, args.log_dir, args.benchmark)
             process = multiprocessing.Process(target=main, args=node_args)
             process.start()
             processes.add(process)
