@@ -1,6 +1,7 @@
 import asyncio
 import functools
 
+from .log import logger
 from .network import UDPProtocol
 from .state import State
 
@@ -57,6 +58,7 @@ class Node:
             loop=self.loop
         )
         self.state.start()
+        logger.info(f"Node {self.host}:{self.port} started")
 
     def stop(self):
         self.state.stop()
