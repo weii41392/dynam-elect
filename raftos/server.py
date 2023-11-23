@@ -42,7 +42,7 @@ class Node:
 
         self.loop = loop
         self.state = State(self)
-        self.requests = asyncio.Queue(loop=self.loop)
+        self.requests = asyncio.Queue()
         self.__class__.nodes.append(self)
 
     async def start(self):

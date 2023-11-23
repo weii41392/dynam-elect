@@ -8,7 +8,7 @@ def atomic_method(func):
 
     @functools.wraps(func)
     async def wrapped(self, *args, **kwargs):
-        with await self.lock:
+        async with self.lock:
             result = await func(self, *args, **kwargs)
 
         return result

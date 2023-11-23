@@ -50,7 +50,7 @@ def validate_commit_index(func):
 
             try:
                 self.apply_future.set_result(not_applied)
-            except (asyncio.futures.InvalidStateError, AttributeError):
+            except (asyncio.InvalidStateError, AttributeError):
                 pass
 
         return func(self, *args, **kwargs)
