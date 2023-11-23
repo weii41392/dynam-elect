@@ -1,2 +1,4 @@
-cryptography==1.5.3
-msgpack-python==0.4.8
+cryptography==41.0.5
+msgpack-python==0.5.6
+aiohttp==3.9.0
+requests==2.31.0

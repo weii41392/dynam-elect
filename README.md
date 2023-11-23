@@ -1,75 +1,29 @@
-# raftos
+# On Efficiency of Raft Algorithm under Uneven Network Conditions
 
-[![Build Status](https://travis-ci.org/zhebrak/raftos.svg)](https://travis-ci.org/zhebrak/raftos) [![PyPI version](https://badge.fury.io/py/raftos.svg)](http://badge.fury.io/py/raftos)
+## Install
 
-Asynchronous replication framework based on [Raft Algorithm](https://raft.github.io/) for fault-tolerant distributed systems.
+- Python 3.10
 
-![](https://raw.github.com/zhebrak/raftos/master/docs/img/raft_rsm.png)
-
-#### Install
-
+- Install requirements
 ```
-pip install raftos
+pip install -r requirements.txt
 ```
 
-#### Register nodes on every server
+## Evaluation
 
-```python
-import raftos
+### Key-Value Store
 
-
-loop.create_task(
-    raftos.register(
-        # node running on this machine
-        '127.0.0.1:8000',
-
-        # other servers
-        cluster=[
-            '127.0.0.1:8001',
-            '127.0.0.1:8002'
-        ]
-    )
-)
-loop.run_forever()
+- Run cluster
+```
+python kvs_cluster.py --num_nodes NUM_NODES
 ```
 
-#### Data replication
-
-```python
-counter = raftos.Replicated(name='counter')
-data = raftos.ReplicatedDict(name='data')
-
-
-# value on a leader gets replicated to all followers
-await counter.set(42)
-await data.update({
-    'id': 337,
-    'data': {
-        'amount': 20000,
-        'created_at': '7/11/16 18:45'
-    }
-})
+- Run client
+```
+python kvs_client.py --num_nodes NUM_NODES
 ```
 
-#### In case you only need consensus algorithm with leader election
+## Reference
 
-```python
-await raftos.wait_until_leader(current_node)
-```
-or
-```python
-if raftos.get_leader() == current_node:
-    # make request or respond to a client
-```
-or
-```python
-raftos.configure({
-    'on_leader': start,
-    'on_follower': stop
-})
-```
-
-Whenever the leader falls, someone takes its place.
-
-
-[Paper](https://raft.github.io/raft.pdf) & [Video](https://www.youtube.com/watch?v=YbZ3zDzDnrw)
+- [Raft](https://raft.github.io/)
+- [zhebrak/raftos](https://github.com/zhebrak/raftos)
