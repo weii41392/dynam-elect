@@ -68,6 +68,7 @@ class BaseState:
         self.id = self.state.id
         self.loop = self.state.loop
 
+    # Candidates request votes from other nodes during elections.
     @validate_term
     def on_receive_request_vote(self, data):
         """RequestVote RPC — invoked by Candidate to gather votes
@@ -136,6 +137,9 @@ class Leader(BaseState):
         super().__init__(*args, **kwargs)
 
         self.heartbeat_timer = Timer(config.heartbeat_interval, self.heartbeat)
+        # call self.state.to_follower if the leader does not receive a 
+        # majority of heartbeat acknowledgments within a certain time 
+        # When the leader fails to receive acknowledgment from a majority of followers within a certain timeframe, it steps down, triggering a new election.
         self.step_down_timer = Timer(
             config.step_down_missed_heartbeats * config.heartbeat_interval,
             self.state.to_follower
@@ -144,16 +148,20 @@ class Leader(BaseState):
         self.request_id = 0
         self.response_map = {}
 
+    # Initializes the log for the leader.
+    # Sends the first heartbeat and starts the heartbeat timer.
     def start(self):
         self.init_log()
         self.heartbeat()
         self.heartbeat_timer.start()
         self.step_down_timer.start()
 
+    # Stops the heartbeat and step-down timers.
     def stop(self):
         self.heartbeat_timer.stop()
         self.step_down_timer.stop()
 
+    # Initializes the next_index and match_index for each follower in the cluster. 
     def init_log(self):
         self.log.next_index = {
             follower: self.log.last_log_index + 1 for follower in self.state.cluster
@@ -163,6 +171,12 @@ class Leader(BaseState):
             follower: 0 for follower in self.state.cluster
         }
 
+    # Replicate log entries to the follower nodes. This ensures that all
+    # nodes in the cluster maintain a consistent log.
+    # When the function is called without any new log entries 
+    # (essentially sending empty AppendEntries RPCs), it acts as a heartbeat to let followers know that the leader is still 
+    # operational. This prevents followers from starting a new election.
+    # destination: specifies the target node to which the AppendEntries RPC should be sent. If not provided, the RPC is sent to all followers.
     async def append_entries(self, destination=None):
         """AppendEntries RPC — replicate log entries / heartbeat
         Args:
@@ -181,6 +195,7 @@ class Leader(BaseState):
         # Send AppendEntries RPC to destination if specified or broadcast to everyone
         destination_list = [destination] if destination else self.state.cluster
         for destination in destination_list:
+            # necessary information for the AppendEntries RPC
             data = {
                 'type': 'append_entries',
 
@@ -191,12 +206,14 @@ class Leader(BaseState):
                 'request_id': self.request_id
             }
 
+            # the index of the next log entry that the leader expects to send to that follower 
             next_index = self.log.next_index[destination]
             prev_index = next_index - 1
 
+            # when the last log index of the leader is greater than or equal to next_index for a follower, add the new log entries
             if self.log.last_log_index >= next_index:
                 data['entries'] = [self.log[next_index]]
-
+            # If there are no new log entries to send, an empty list is assigned to data['entries'] (a heartbeat message)
             else:
                 data['entries'] = []
 
@@ -205,8 +222,13 @@ class Leader(BaseState):
                 'prev_log_term': self.log[prev_index]['term'] if self.log and prev_index else 0
             })
 
+            # Send the data (the AppendEntries RPC) asynchronously to the destination
+            # The asyncio.ensure_future method schedules the send operation to be executed concurrently.
             asyncio.ensure_future(self.state.send(data, destination), loop=self.loop)
 
+    # handles responses from followers to the AppendEntries RPCs 
+    # sent by the leader.
+    # The data parameter contains the response data from a follower.
     @validate_commit_index
     @validate_term
     def on_receive_append_entries_response(self, data):
@@ -216,16 +238,26 @@ class Leader(BaseState):
         # and step down via <step_down_timer> if leader doesn't get majority of responses for
         # <step_down_missed_heartbeats> heartbeats
 
+        # It checks if the response's request_id matches a known request. If so, it records the sender's ID.
         if data['request_id'] in self.response_map:
             self.response_map[data['request_id']].add(sender_id)
 
+            # If responses from a majority of the cluster are received 
+            # for a particular request, the leader's step-down timer 
+            # is reset, and the request is removed from the response map.
             if self.state.is_majority(len(self.response_map[data['request_id']]) + 1):
                 self.step_down_timer.reset()
                 del self.response_map[data['request_id']]
 
+        # If the AppendEntries RPC was unsuccessful, the next_index 
+        # for the sender is decremented. 
         if not data['success']:
             self.log.next_index[sender_id] = max(self.log.next_index[sender_id] - 1, 1)
 
+        # If the AppendEntries RPC was successful, the leader updates 
+        # the next_index and match_index for the sender. This is done 
+        # to track up to which point the follower's log is consistent 
+        # with the leader's.
         else:
             if data['last_log_index'] > self.log.match_index[sender_id]:
                 self.log.next_index[sender_id] = data['last_log_index'] + 1
@@ -235,12 +267,23 @@ class Leader(BaseState):
 
         # Send AppendEntries RPC to continue updating fast-forward log (data['success'] == False)
         # or in case there are new entries to sync (data['success'] == data['updated'] == True)
+        #  if there are more entries to be sent to the follower, 
+        # the leader sends another AppendEntries RPC. This could be 
+        # either to replicate new log entries or to retry updating the follower's log for consistency.
         if self.log.last_log_index >= self.log.next_index[sender_id]:
             asyncio.ensure_future(self.append_entries(destination=sender_id), loop=self.loop)
 
+    # This function updates the leader's commit_index, indicating which log 
+    # entries are safely stored on a majority of nodes and can be applied to 
+    # the state machine
     def update_commit_index(self):
+        # keep track of the highest log index known to be committed on a majority of nodes.
         commited_on_majority = 0
         for index in range(self.log.commit_index + 1, self.log.last_log_index + 1):
+            # Count how many followers have replicated the log entry 
+            # at the current index. This is done by checking the 
+            # match_index for each follower, which indicates the 
+            # highest log index known to be replicated on that follower.
             commited_count = len([
                 1 for follower in self.log.match_index
                 if self.log.match_index[follower] >= index
@@ -248,7 +291,9 @@ class Leader(BaseState):
 
             # If index is matched on at least half + self for current term — commit
             # That may cause commit fails upon restart with stale logs
+            # Check if the log entry at the current index is from the leader's current term.
             is_current_term = self.log[index]['term'] == self.storage.term
+            # The entry at index is replicated on a majority of nodes (including the leader itself, hence +1) and is from the current term, commited_on_majority is updated to this index. This is based on the Raft rule that an entry from the current term can be committed once it's stored on a majority of the nodes.
             if self.state.is_majority(commited_count + 1) and is_current_term:
                 commited_on_majority = index
 
@@ -258,18 +303,30 @@ class Leader(BaseState):
         if commited_on_majority > self.log.commit_index:
             self.log.commit_index = commited_on_majority
 
+    # command: the client command that needs to be processed and replicated.
     async def execute_command(self, command):
         """Write to log & send AppendEntries RPC"""
         self.apply_future = asyncio.Future(loop=self.loop)
 
+        # Writes the command to the leader's log.
         entry = self.log.write(self.storage.term, command)
+        # The leader calls self.append_entries() to start replicating this entry to the follower nodes.
         asyncio.ensure_future(self.append_entries(), loop=self.loop)
 
+        # The function then waits for the apply_future to complete. 
+        # This future is likely to be completed elsewhere in the code, 
+        # possibly when the command has been successfully replicated to a 
+        # majority of the cluster and applied to the state machine.
         await self.apply_future
 
     def heartbeat(self):
+        # This ID uniquely identifies each heartbeat (or AppendEntries RPC) 
+        # sent by the leader. By incrementing this ID for each heartbeat, the 
+        # leader can track responses to each specific heartbeat.
         self.request_id += 1
+        # The response_map is used to keep track of which nodes have responded to each heartbeat.
         self.response_map[self.request_id] = set()
+        # The append_entries method is called without any new log entries, meaning it sends empty AppendEntries RPCs. These serve as heartbeats, indicating to the followers that the leader is still operational
         asyncio.ensure_future(self.append_entries(), loop=self.loop)
 
 
@@ -381,14 +438,34 @@ class Follower(BaseState):
     def election_interval():
         return random.uniform(*config.election_interval)
 
+    # Handling the reception of AppendEntries RPCs from the leader.
     @validate_commit_index
     @validate_term
     def on_receive_append_entries(self, data):
+        # Sets the current leader's ID based on the received data. This 
+        # ensures the follower knows which node is the current leader.
         self.state.set_leader(data['leader_id'])
 
-        # Reply False if log doesn’t contain an entry at prev_log_index whose term matches prev_log_term
+        # If either of these conditions is true (the follower is missing 
+        # entries or there's a term mismatch), the follower knows it cannot 
+        # correctly append the new entries from the leader. Therefore, it 
+        # needs to inform the leader about this inconsistency, so the leader 
+        # can take corrective actions (like decrementing the next_index for 
+        # this follower and retrying log replication).
         try:
+            # This index represents the position in the log immediately before 
+            # the new entries that the leader is trying to replicate.
             prev_log_index = data['prev_log_index']
+            # (prev_log_index > self.log.last_log_index) checks if the 
+            # prev_log_index specified by the leader is beyond the end of the 
+            # follower's log. If it is, it means the follower is missing 
+            # entries and cannot append the new entries sent by the leader.
+            # prev_log_inde: it ensures prev_log_index is not zero (which   
+            # would mean there's no preceding entry, a valid scenario for a completely new log.
+            # self.log[prev_log_index]['term'] != data['prev_log_term']: it 
+            # compares the term of the log entry at prev_log_index in the 
+            # follower’s log with the prev_log_term sent by the leader. If 
+            # these terms don't match, it indicates a log inconsistency.
             if prev_log_index > self.log.last_log_index or (
                 prev_log_index and self.log[prev_log_index]['term'] != data['prev_log_term']
             ):
@@ -404,8 +481,7 @@ class Follower(BaseState):
         except IndexError:
             pass
 
-        # If an existing entry conflicts with a new one (same index but different terms),
-        # delete the existing entry and all that follow it
+        # If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it
         is_append = True
         new_index = data['prev_log_index'] + 1
         try:
@@ -439,15 +515,21 @@ class Follower(BaseState):
 
         self.election_timer.reset()
 
+    # Handles the reception of vote requests from candidate nodes during elections
+    # data contains information about the vote request from a candidate.
     @validate_term
     def on_receive_request_vote(self, data):
+        # Checks if the follower has not already voted in this term (self.
+        # storage.voted_for is None).
+        # Ensures that the message received is a vote request and not a response.
         if self.storage.voted_for is None and not data['type'].endswith('_response'):
 
             # Candidates' log has to be up-to-date
 
             # If the logs have last entries with different terms,
-            # then the log with the later term is more up-to-date. If the logs end with the same term,
-            # then whichever log is longer is more up-to-date.
+            # then the log with the later term is more up-to-date. If the 
+            # logs end with the same term, then whichever log is longer is 
+            # more up-to-date.
 
             if data['last_log_term'] != self.log.last_log_term:
                 up_to_date = data['last_log_term'] > self.log.last_log_term
@@ -465,17 +547,24 @@ class Follower(BaseState):
                 'vote_granted': up_to_date
             }
 
+            # Sends the response asynchronously back to the candidate.
             asyncio.ensure_future(self.state.send(response, data['sender']), loop=self.loop)
 
     def start_election(self):
         self.state.to_candidate()
 
 
+# Ensure that certain operations are only executed when the node is a leader.
 def leader_required(func):
 
     @functools.wraps(func)
     async def wrapped(cls, *args, **kwargs):
+        # The decorated function will wait until an election is successfully completed.
         await cls.wait_for_election_success()
+        # Checks if the current node (cls) is a leader. This is done by 
+        # verifying the type of cls.leader. If the current node is not a 
+        # leader, it raises a NotALeaderException, indicating that the 
+        # operation can only be performed by the leader.
         if not isinstance(cls.leader, Leader):
             raise NotALeaderException(
                 'Leader is {}!'.format(cls.leader or 'not chosen yet')
@@ -491,6 +580,9 @@ class State:
     # <Leader object> if state is leader
     # <state_id> if state is follower
     # <None> if leader is not chosen yet
+    # Stores the current leader. It's either a Leader object if the node is a 
+    # leader, the state ID if it's a follower, or None if the leader is not 
+    # chosen yet.
     leader = None
 
     # Await this future for election ending
@@ -517,11 +609,13 @@ class State:
     def stop(self):
         self.state.stop()
 
+    # only performed when the node is a leader.
     @classmethod
     @leader_required
     async def get_value(cls, name):
         return cls.leader.state_machine[name]
 
+    # only performed when the node is a leader.
     @classmethod
     @leader_required
     async def set_value(cls, name, value):
@@ -534,6 +628,8 @@ class State:
         """Sends request to all cluster excluding itself"""
         return self.server.broadcast(data)
 
+    # Dynamically calls the appropriate method on the current state (leader, 
+    # follower, or candidate) based on the received request type.
     def request_handler(self, data):
         getattr(self.state, 'on_receive_{}'.format(data['type']))(data)
 
@@ -597,6 +693,7 @@ class State:
 
         return cls.leader
 
+    # awaiting the election of a leader
     @classmethod
     async def wait_for_election_success(cls):
         """Await this function if your cluster must have a leader"""
@@ -604,6 +701,7 @@ class State:
             cls.leader_future = asyncio.Future(loop=cls.loop)
             await cls.leader_future
 
+    # awaiting a specific node becoming a leader
     @classmethod
     async def wait_until_leader(cls, node_id):
         """Await this function if you want to do nothing until node_id becomes a leader"""
