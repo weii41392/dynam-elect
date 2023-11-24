@@ -19,3 +19,8 @@ This way, we can prevent a leader with degrading performance from ruling for a l
 5. When a follower $n_p$ becomes the candidate and starts a new term (typically because the leader $n_L$ crashes), a follower $n_i$ does not answer right after it receives a $\mathtt{RequestVote}$ RPC.
 Instead, it waits for $\mathcal{W}$ seconds to see whether there is another candidate $n_q$ such that $T_q > T_p$.
 This approach also gives the node demonstrating better performance an edge in the election process.
+
+## Transition function of $T$
+
+The transition function is $T' := T \cdot m$, where $m$ is a multiplier. We want $m \in [0.5, 2]$.
+We can compute $m$ from the ratio (of the EMA of latency across all nodes to the current latency of some node) using this function: $f(x) = \frac{1}{1+e^{-kx}} \cdot \frac{3}{2} + 0.5$, where $k$ is a hyperparameter (temparature).
