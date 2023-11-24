@@ -45,7 +45,7 @@ def measure_once(servers, num_requests):
         status_code, text = get(servers[server_id], key)
         if status_code == 302:
             server_id = int(text)
-            status_code, text = put(servers[server_id], key, value)
+            status_code, text = get(servers[server_id], key)
         if status_code != 200:
             logger.error(
                 f'Unexpected failure: get({servers[server_id]}, {key}), ' \
@@ -89,7 +89,11 @@ if __name__ == '__main__':
     servers = { i: f'http://127.0.0.1:{HTTP_PORT + i}' for i in range(args.num_nodes) }
     if args.num_measurements == 1:
         measure_once(servers, args.num_requests)
-    measurements = [measure_once(servers, args.num_requests) for _ in range(args.num_measurements)]
-    tps = [args.num_requests / (m + 1e-99) for m in measurements]
-    average = sum(tps) / len(tps)
-    logging.info(f"Average TPS (transaction per second): {average:.3f}")
+    tps_list = []
+    for i in range(args.num_measurements):
+        m = measure_once(servers, args.num_requests)
+        tps = args.num_requests / (m + 1e-99)
+        logging.info(f"Measurement {i + 1}: {tps:.3f}")
+        tps_list.append(tps)
+    average_tps = sum(tps_list) / len(tps_list)
+    logging.info(f"Average TPS (transaction per second): {average_tps:.3f}")
