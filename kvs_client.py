@@ -71,8 +71,8 @@ if __name__ == '__main__':
     assert args.num_nodes > 0
     assert args.num_requests > 0
     assert args.num_measurements > 0
-    os.makedirs(args.log_dir, exist_ok=True)
-    log_path = os.path.join(args.log_dir, 'client-logging.log')
+    log_path = os.path.join(args.log_dir, 'client', 'logging.log')
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
     assert not os.path.exists(log_path)
 
     logging.basicConfig(
