@@ -68,9 +68,11 @@ def setup_server(node_id):
     app.add_routes(routes)
     return app.make_handler()
 
-def main(node_id, node, cluster, log_dir, benchmark):
+def main(node_id, node, cluster, log_base_dir, benchmark):
+    log_dir = os.path.join(log_base_dir, f'node-{node_id}')
+    os.makedirs(log_dir)
     logging.basicConfig(
-        filename=os.path.join(log_dir, 'node-{}-logging.log'.format(node_id)),
+        filename=os.path.join(log_dir, 'logging.log'),
         format=u'[%(asctime)s %(filename)s:%(lineno)d %(levelname)s]  %(message)s',
         level=logging.DEBUG if not benchmark else logging.ERROR
     )
