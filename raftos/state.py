@@ -330,6 +330,32 @@ class Leader(BaseState):
         # The append_entries method is called without any new log entries, meaning it sends empty AppendEntries RPCs. These serve as heartbeats, indicating to the followers that the leader is still operational
         asyncio.ensure_future(self.append_entries(), loop=self.loop)
 
+    @validate_commit_index
+    async def compact_log(self):
+        self.log.reset()
+        self.init_log()
+        state = dict(self.state_machine)
+        self.log.write(self.storage.term, state)
+        await self.install_snapshot()
+
+    async def install_snapshot(self):
+        destination_list = self.state.cluster
+        for destination in destination_list:
+            data = {
+                'type': 'install_snapshot',
+
+                'term': self.storage.term,
+                'leader_id': self.id,
+                'snapshot': self.log[1]['command']
+            }
+            asyncio.ensure_future(self.state.send(data, destination), loop=self.loop)
+
+    @validate_term
+    def on_receive_install_snapshot_response(self, data):
+        sender_id = self.state.get_sender_id(data['sender'])
+        self.log.next_index[sender_id] = 2
+        self.log.match_index[sender_id] = 1
+        self.update_commit_index()
 
 class Candidate(BaseState):
     """Raft Candidate
@@ -395,6 +421,12 @@ class Candidate(BaseState):
 
     @validate_term
     def on_receive_append_entries(self, data):
+        """If we discover a Leader with the same term — step down"""
+        if self.storage.term == data['term']:
+            self.state.to_follower()
+
+    @validate_term
+    def on_receive_install_snapshot(self, data):
         """If we discover a Leader with the same term — step down"""
         if self.storage.term == data['term']:
             self.state.to_follower()
@@ -516,6 +548,21 @@ class Follower(BaseState):
 
         self.election_timer.reset()
 
+    @validate_term
+    def on_receive_install_snapshot(self, data):
+        self.state.set_leader(data['leader_id'])
+        self.log.reset()
+        self.log.write(data['term'], data['snapshot'])
+        self.state_machine.reset()
+        self.state_machine.apply(data['snapshot'])
+
+        response = {
+            'type': 'install_snapshot_response',
+            'term': self.storage.term,
+        }
+        asyncio.ensure_future(self.state.send(response, data['sender']), loop=self.loop)
+        self.election_timer.reset()
+
     # Handles the reception of vote requests from candidate nodes during elections
     # data contains information about the vote request from a candidate.
     @validate_term
@@ -621,6 +668,11 @@ class State:
     @leader_required
     async def set_value(cls, name, value):
         await cls.leader.execute_command({name: value})
+
+    @classmethod
+    @leader_required
+    async def compact_log(cls):
+        await cls.leader.compact_log()
 
     def send(self, data, destination):
         return self.server.send(data, destination)

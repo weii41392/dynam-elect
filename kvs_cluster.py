@@ -64,6 +64,18 @@ def setup_server(node_id):
         logger.info("Respond 200: ok")
         return web.Response(text="ok")
 
+    @routes.post('/compact_log')
+    async def compact_log(request: web.Request):
+        logger.info("/compact_log")
+        leader = get_node_id(raftos.get_leader())
+        if leader != node_id:
+            logger.info(f"Respond 302: {leader}")
+            return web.Response(status=302, text=str(leader))
+
+        await raftos.compact_log()
+        logger.info("Respond 200: ok")
+        return web.Response(text="ok")
+
     app = web.Application()
     app.add_routes(routes)
     return app.make_handler()

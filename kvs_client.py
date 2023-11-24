@@ -24,6 +24,12 @@ def put(server, key, value):
     logger.debug(f'Return {response.status_code}: {response.text}')
     return response.status_code, response.text
 
+def compact_log(server):
+    logger.debug(f'{server}/compact_log')
+    response = requests.post(f'{server}/compact_log')
+    logger.debug(f'Return {response.status_code}: {response.text}')
+    return response.status_code, response.text
+
 def measure_once(servers, num_requests):
     server_id = random.choice(list(servers.keys()))
     keys = [random.randint(1, 10) for _ in range(num_requests)]
@@ -57,6 +63,17 @@ def measure_once(servers, num_requests):
         else:
             logger.error('Put failed')
     end_time = time.perf_counter()
+
+    # Compact log
+    status_code, text = compact_log(servers[server_id])
+    if status_code == 302:
+        server_id = int(text)
+        status_code, text = compact_log(servers[server_id])
+    if status_code != 200:
+        logger.error(
+            f'Unexpected failure: get({servers[server_id]}, {key}), ' \
+            f'code={status_code}, text={text}')
+
     return end_time - start_time
 
 if __name__ == '__main__':

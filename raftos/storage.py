@@ -61,6 +61,10 @@ class FileDict:
 
         return self.serializer.unpack(content)
 
+    def keys(self):
+        self.cache = self._get_file_content()
+        return self.cache.keys()
+
 
 class Log:
     """Persistent Raft Log on a disk
@@ -142,6 +146,14 @@ class Log:
         for entry in updated:
             self.write(entry['term'], entry['command'])
 
+    def reset(self):
+        open(self.filename, "wb").close()
+        self.cache = []
+        self.commit_index = 0
+        self.last_applied = 0
+        self.next_index = None
+        self.match_index = None
+
     @property
     def last_log_index(self):
         """Index of last log entry staring from _one_"""
@@ -167,6 +179,9 @@ class StateMachine(FileDict):
 
         self.update(command)
 
+    def reset(self):
+        open(self.filename, "wb").close()
+        self.cache = {}
 
 class FileStorage(FileDict):
     """Persistent storage
