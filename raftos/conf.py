@@ -29,7 +29,13 @@ class Configuration:
 
             # Election callbacks
             'on_leader': lambda: None,
-            'on_follower': lambda: None
+            'on_follower': lambda: None,
+
+            'initial_leadership_duration': 2,
+            'probability_choosing_longest': 0.5,
+            'rtt_degradation_threshold': 3,
+            'ema_momentum': 2e-2,
+            'duration_temperature': 2
         }
 
     def configure(self, kwargs):
@@ -41,6 +47,8 @@ class Configuration:
             self.step_down_interval,
             self.step_down_interval * self.election_interval_spread
         )
+
+        self.wait_before_respond_vote_request = self.step_down_interval * 0.5
 
         if isinstance(self.cryptor, type):
             self.cryptor = self.cryptor(self)

@@ -27,6 +27,7 @@ class UDPProtocol(asyncio.DatagramProtocol):
 
     def datagram_received(self, data, sender):
         data = self.serializer.unpack(self.cryptor.decrypt(data))
+        # logger.debug(f"Receive {data['type']} RPC from {sender}")
         data.update({
             'sender': sender
         })

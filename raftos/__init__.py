@@ -1,4 +1,5 @@
 from .conf import configure, config
+from .coordinator import register as register_coordinator
 from .replicator import Replicated, ReplicatedDict, ReplicatedList
 from .server import register, stop
 from .state import State
@@ -12,6 +13,7 @@ __all__ = [
     'config',
     'configure',
     'register',
+    'register_coordinator',
     'stop',
 
     'get_leader',

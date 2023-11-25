@@ -6,18 +6,22 @@ from .network import UDPProtocol
 from .state import State
 
 
-async def register(*address_list, cluster=None, loop=None):
+async def register(*address_list, coordinator=None, cluster=None, loop=None):
     """Start Raft node (server)
     Args:
         address_list — 127.0.0.1:8000 [, 127.0.0.1:8001 ...]
-        cluster — [127.0.0.1:8001, 127.0.0.1:8002, ...]
+        coordinator  - 127.0.0.1.8001
+        cluster — [127.0.0.1:8002, 127.0.0.1:8003, ...]
     """
 
     loop = loop or asyncio.get_event_loop()
     for address in address_list:
         host, port = address.rsplit(':', 1)
         node = Node(address=(host, int(port)), loop=loop)
-        await node.start()
+        if coordinator:
+            host, port = coordinator.rsplit(':', 1)
+            port = int(port)
+            node.set_coordinator((host, port))
 
         for address in cluster:
             host, port = address.rsplit(':', 1)
@@ -25,6 +29,7 @@ async def register(*address_list, cluster=None, loop=None):
 
             if (host, port) != (node.host, node.port):
                 node.update_cluster((host, port))
+        await node.start()
 
 
 def stop():
@@ -40,6 +45,7 @@ class Node:
     def __init__(self, address, loop):
         self.host, self.port = address
         self.cluster = set()
+        self.coordinator = None
 
         self.loop = loop
         self.state = State(self)
@@ -57,8 +63,8 @@ class Node:
             self.loop.create_datagram_endpoint(protocol, local_addr=address),
             loop=self.loop
         )
+        logger.info(f"Node started")
         self.state.start()
-        logger.info(f"Node {self.host}:{self.port} started")
 
     def stop(self):
         self.state.stop()
@@ -70,6 +76,9 @@ class Node:
     @property
     def cluster_count(self):
         return len(self.cluster)
+
+    def set_coordinator(self, address):
+        self.coordinator = address
 
     def request_handler(self, data):
         self.state.request_handler(data)
@@ -84,6 +93,7 @@ class Node:
             host, port = destination.split(':')
             destination = host, int(port)
 
+        # logger.debug(f"Send {data['type']} RPC to {destination}")
         await self.requests.put({
             'data': data,
             'destination': destination
