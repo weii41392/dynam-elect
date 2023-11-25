@@ -77,6 +77,7 @@ class BaseState:
         Arguments:
             term — candidate’s term
             candidate_id — candidate requesting vote
+            candidate_duration — leadership duration granted by coordinator
             last_log_index — index of candidate’s last log entry
             last_log_term — term of candidate’s last log entry
 
@@ -121,6 +122,28 @@ class BaseState:
     def on_receive_append_entries_response(self, data):
         """AppendEntries RPC response — description above"""
 
+    def on_receive_nominate_candidate(self, data):
+        """NominateCandidate RPC — For a follower node to become a candidate
+        Arguments:
+            duration: leadership duration
+
+        Receiver implementation:
+            Become a candidate and take the duration as advantage in vote request stage.
+        """
+
+    def on_receive_abort_leadership(self, data):
+        """AbortLeadership RPC - For a leader to step down
+
+        Receiver implementation:
+            Become a follower
+        """
+
+    def on_receive_heartbeat(self, data):
+        """Heartbeat RPC - For a leader to respond heartbeat
+
+        Receiver implementation:
+            Return a `heartbeat_response` RPC to coordinator
+        """
 
 class Leader(BaseState):
     """Raft Leader
@@ -153,6 +176,7 @@ class Leader(BaseState):
     # Initializes the log for the leader.
     # Sends the first heartbeat and starts the heartbeat timer.
     def start(self):
+        self.start_leadership()
         self.init_log()
         self.heartbeat()
         self.heartbeat_timer.start()
@@ -160,6 +184,7 @@ class Leader(BaseState):
 
     # Stops the heartbeat and step-down timers.
     def stop(self):
+        self.end_leadership()
         self.heartbeat_timer.stop()
         self.step_down_timer.stop()
 
@@ -308,6 +333,7 @@ class Leader(BaseState):
     # command: the client command that needs to be processed and replicated.
     async def execute_command(self, command):
         """Write to log & send AppendEntries RPC"""
+        logger.debug(command)
         self.apply_future = asyncio.Future(loop=self.loop)
 
         # Writes the command to the leader's log.
@@ -358,6 +384,28 @@ class Leader(BaseState):
         self.log.match_index[sender_id] = 1
         self.update_commit_index()
 
+    def on_receive_abort_leadership(self, data):
+        """For a leader to step down"""
+        self.state.to_follower()
+
+    def on_receive_heartbeat(self, data):
+        """For a leader to respond heartbeat"""
+        response = { "type": "heartbeat_response" }
+        asyncio.ensure_future(self.state.send(response, data['sender']), \
+                              loop=self.loop)
+
+    def start_leadership(self):
+        """Send StartLeadership RPC to coordinator"""
+        data = { "type": "start_leadership" }
+        asyncio.ensure_future(self.state.send(data, self.state.coordinator), \
+                              loop=self.loop)
+
+    def end_leadership(self):
+        """Send EndLeadership RPC to coordinator"""
+        data = { "type": "end_leadership" }
+        asyncio.ensure_future(self.state.send(data, self.state.coordinator), \
+                              loop=self.loop)
+
 class Candidate(BaseState):
     """Raft Candidate
     — On conversion to candidate, start election:
@@ -375,6 +423,8 @@ class Candidate(BaseState):
 
         self.election_timer = Timer(self.election_interval, self.state.to_follower)
         self.vote_count = 0
+
+        self.duration = self.state.duration
 
     def start(self):
         """Increment current term, vote for herself & send vote requests"""
@@ -403,6 +453,7 @@ class Candidate(BaseState):
 
             'term': self.storage.term,
             'candidate_id': self.id,
+            'candidate_duration': self.duration,
             'last_log_index': self.log.last_log_index,
             'last_log_term': self.log.last_log_term
         }
@@ -413,7 +464,8 @@ class Candidate(BaseState):
         """Receives response for vote request.
         If the vote was granted then check if we got majority and may become Leader
         """
-
+        logger.debug(f"Got vote (granted={data.get('vote_granted')}) from " \
+                    f"node ({data.get('sender')})")
         if data.get('vote_granted'):
             self.vote_count += 1
 
@@ -449,6 +501,12 @@ class Follower(BaseState):
         super().__init__(*args, **kwargs)
 
         self.election_timer = Timer(self.election_interval, self.start_election)
+
+        self.best_candidate = None
+        self.respond_vote_request_timer = Timer(
+            config.wait_before_respond_vote_request,
+            self.respond_vote_request
+        )
 
     def start(self):
         self.init_storage()
@@ -585,21 +643,61 @@ class Follower(BaseState):
             else:
                 up_to_date = data['last_log_index'] >= self.log.last_log_index
 
+            # When a follower $n_p$ becomes the candidate and starts a new term
+            # (typically because the leader $n_L$ crashes), a follower $n_i$ does not
+            # answer right after it receives a $\mathtt{RequestVote}$ RPC. Instead, it
+            # waits for $\mathcal{W}$ seconds to see whether there is another candidate
+            # $n_q$ such that $T_q > T_p$. This approach also gives the node
+            # demonstrating better performance an edge in the election process.
             if up_to_date:
-                self.storage.update({
-                    'voted_for': data['candidate_id']
-                })
+                if not self.respond_vote_request_timer.is_active:
+                    self.respond_vote_request_timer.start()
 
-            response = {
-                'type': 'request_vote_response',
-                'term': self.storage.term,
-                'vote_granted': up_to_date
-            }
+                candidate_id = data['candidate_id']
+                candidate_duration = data.get('candidate_duration')
 
-            # Sends the response asynchronously back to the candidate.
-            asyncio.ensure_future(self.state.send(response, data['sender']), loop=self.loop)
+                # Update self.best_candidate
+                if self.best_candidate is None:
+                    self.best_candidate = {
+                        "id": candidate_id,
+                        "duration": candidate_duration
+                    }
+                    return
+
+                if candidate_duration is None:
+                    return
+
+                if self.best_candidate['duration'] is None or \
+                    candidate_duration > self.best_candidate['duration']:
+                    self.best_candidate = {
+                        "id": candidate_id,
+                        "duration": candidate_duration
+                    }
+
+    def respond_vote_request(self):
+        self.respond_vote_request_timer.stop()
+        if self.best_candidate is None:
+            return
+        candidate_id = self.best_candidate['id']
+        self.storage.update({
+            'voted_for': candidate_id
+        })
+
+        response = {
+            'type': 'request_vote_response',
+            'term': self.storage.term,
+            'vote_granted': True
+        }
+
+        # Sends the response asynchronously back to the candidate.
+        asyncio.ensure_future(self.state.send(response, candidate_id), loop=self.loop)
+        self.best_candidate = None
 
     def start_election(self):
+        self.state.to_candidate()
+
+    def on_receive_nominate_candidate(self, data):
+        self.state.duration = data['duration']
         self.state.to_candidate()
 
 
@@ -651,6 +749,7 @@ class State:
         self.state_machine = StateMachine(self.id)
 
         self.state = Follower(self)
+        self.duration = None
 
     def start(self):
         self.state.start()
@@ -697,6 +796,10 @@ class State:
     @property
     def cluster(self):
         return [self._get_id(*address) for address in self.server.cluster]
+
+    @property
+    def coordinator(self):
+        return self._get_id(*self.server.coordinator)
 
     def is_majority(self, count):
         return count > (self.server.cluster_count // 2)
