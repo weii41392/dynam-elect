@@ -8,53 +8,74 @@ import time
 logger = logging.getLogger(__name__)
 random.seed(42)
 
-# Server ID: 0 ~ N - 1
+# Server ID: 1 ~ N
 # HTTP Port: 9000 + Server ID
 HTTP_PORT = 9000
+server_address = None
 
+def retry_and_redirect(func):
+    def wrapped(*args, **kwargs):
+        global server_address
+        while True:
+            status_code, text = func(*args, **kwargs)
+            if status_code == 200:
+                return status_code, text
+            if status_code == 302:
+                args = list(args)
+                args[0] = text
+                server_address = text
+    return wrapped
+
+@retry_and_redirect
 def get(server, key):
-    logger.debug(f'{server}/get?key={key}')
-    response = requests.get(f'{server}/get?key={key}')
+    logger.debug(f'http://{server}/get?key={key}')
+    try:
+        response = requests.get(f'http://{server}/get?key={key}', timeout=1)
+    except requests.exceptions.Timeout:
+        return 408, None
     logger.debug(f'Return {response.status_code}: {response.text}')
     return response.status_code, response.text
 
+@retry_and_redirect
 def put(server, key, value):
-    logger.debug(f'{server}/put?key={key}&value={value}')
-    response = requests.put(f'{server}/put?key={key}&value={value}')
+    logger.debug(f'http://{server}/put?key={key}&value={value}')
+    try:
+        response = requests.put(f'http://{server}/put?key={key}&value={value}', timeout=1)
+    except requests.exceptions.Timeout:
+        return 408, None
     logger.debug(f'Return {response.status_code}: {response.text}')
     return response.status_code, response.text
 
+@retry_and_redirect
 def compact_log(server):
-    logger.debug(f'{server}/compact_log')
-    response = requests.post(f'{server}/compact_log')
+    logger.debug(f'http://{server}/compact_log')
+    try:
+        response = requests.post(f'http://{server}/compact_log', timeout=1)
+    except requests.exceptions.Timeout:
+        return 408, None
     logger.debug(f'Return {response.status_code}: {response.text}')
     return response.status_code, response.text
 
 def measure_once(servers, num_requests):
-    server_id = random.choice(list(servers.keys()))
+    global server_address
+    server_address = random.choice(list(servers.values()))
     keys = [random.randint(1, 10) for _ in range(num_requests)]
     values = list(range(num_requests))
     random.shuffle(keys)
     random.shuffle(values)
     start_time = time.perf_counter()
     for key, value in zip(keys, values):
-        status_code, text = put(servers[server_id], key, value)
-        if status_code == 302:
-            server_id = int(text)
-            status_code, text = put(servers[server_id], key, value)
+        status_code, text = put(server_address, key, value)
         if status_code != 200:
             logger.error(
-                f'Unexpected failure: put({servers[server_id]}, {key}, {value}), ' \
+                f'Unexpected failure: put({server_address}, {key}, {value}), ' \
                 f'code={status_code}, text={text}')
             continue
 
-        status_code, text = get(servers[server_id], key)
-        if status_code == 302:
-            server_id = int(text)
-            status_code, text = get(servers[server_id], key)
+        status_code, text = get(server_address, key)
         if status_code != 200:
             logger.error(
-                f'Unexpected failure: get({servers[server_id]}, {key}), ' \
+                f'Unexpected failure: get({server_address}, {key}), ' \
                 f'code={status_code}, text={text}')
             continue
 
@@ -65,13 +86,10 @@ def measure_once(servers, num_requests):
     end_time = time.perf_counter()
 
     # Compact log
-    status_code, text = compact_log(servers[server_id])
-    if status_code == 302:
-        server_id = int(text)
-        status_code, text = compact_log(servers[server_id])
+    status_code, text = compact_log(server_address)
     if status_code != 200:
         logger.error(
-            f'Unexpected failure: get({servers[server_id]}, {key}), ' \
+            f'Unexpected failure: get({server_address}, {key}), ' \
             f'code={status_code}, text={text}')
 
     return end_time - start_time
@@ -103,7 +121,7 @@ if __name__ == '__main__':
     logging.info(f"Number of measurements: {args.num_measurements}")
     logging.info("Start measurement")
 
-    servers = { i: f'http://127.0.0.1:{HTTP_PORT + i}' for i in range(args.num_nodes) }
+    servers = { i: f'127.0.0.1:{HTTP_PORT + i}' for i in range(1, args.num_nodes + 1) }
     if args.num_measurements == 1:
         measure_once(servers, args.num_requests)
     tps_list = []

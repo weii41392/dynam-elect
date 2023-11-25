@@ -31,7 +31,12 @@ class Configuration:
             'on_leader': lambda: None,
             'on_follower': lambda: None,
 
-            'simulated_delay': lambda port: (port - 8000) * 1e-4
+            'simulated_delay': lambda port: (port - 8000) * 1e-4,
+            'initial_leadership_duration': 2,
+            'probability_choosing_longest': 0.5,
+            'rtt_degradation_threshold': 3,
+            'ema_momentum': 2e-2,
+            'duration_temperature': 2
         }
 
     def configure(self, kwargs):
@@ -43,6 +48,8 @@ class Configuration:
             self.step_down_interval,
             self.step_down_interval * self.election_interval_spread
         )
+
+        self.wait_before_respond_vote_request = self.step_down_interval * 0.5
 
         if isinstance(self.cryptor, type):
             self.cryptor = self.cryptor(self)

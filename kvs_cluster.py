@@ -6,81 +6,102 @@ import os
 
 from aiohttp import web
 import raftos
-from raftos.log import logger
 
-# Server ID: 0 ~ N - 1
+logger = logging.getLogger('raftos')
+
+# Coordinator: 0, Servers: 1 ~ N
 # HTTP Port: 9000 + Server ID
 # UDP Port: 8000 + Server ID
 HTTP_PORT = 9000
 UDP_PORT = 8000
 
-def get_address(node_id):
-    return '127.0.0.1:{}'.format(UDP_PORT + node_id)
+def from_udp_to_http(address):
+    host, port = address.split(':')
+    return f"{host}:{int(port) + 1000}"
 
-def get_node_id(address):
-    return int(address.rsplit(":", 1)[1]) - UDP_PORT
+def get_udp_address(node_id):
+    return f'127.0.0.1:{UDP_PORT + node_id}'
 
+def leader_required(node_id):
+    address = get_udp_address(node_id)
+    def decorator(func):
+        def wrapped(self, *args, **kwargs):
+            leader = raftos.get_leader()
+            if leader is None:
+                logger.debug("Respond 503: no leader")
+                return web.Response(status=503, text="no leader")
+            if leader != address:
+                leader = from_udp_to_http(leader)
+                logger.debug(f"Respond 302: {leader}")
+                return web.Response(status=302, text=leader)
+            return func(self, *args, **kwargs)
+        return wrapped
+    return decorator
 
 def setup_server(node_id):
     data = raftos.ReplicatedDict(name='data')
     routes = web.RouteTableDef()
 
     @routes.get('/get')
+    @leader_required(node_id)
     async def get(request: web.Request):
         key = request.url.query.get("key")
-        logger.info(f"/get?key={key}")
+        logger.debug(f"/get?key={key}")
         if key is None:
-            logger.info("Respond 400: key is required")
+            logger.debug("Respond 400: key is required")
             return web.Response(status=400, text="key is required")
-
-        leader = get_node_id(raftos.get_leader())
-        if leader != node_id:
-            logger.info(f"Respond 302: {leader}")
-            return web.Response(status=302, text=str(leader))
-
         try:
             value = await data[key]
-            logger.info(f"Respond 200: {value}")
+            logger.debug(f"Respond 200: {value}")
             return web.Response(text=str(value))
         except KeyError:
-            logger.info("Respond 404: key not found")
+            logger.debug("Respond 404: key not found")
             return web.Response(status=404, text="key not found")
 
     @routes.put('/put')
+    @leader_required(node_id)
     async def put(request: web.Request):
         key = request.url.query.get("key")
         value = request.url.query.get("value")
-        logger.info(f"/put?key={key}&value={value}")
+        logger.debug(f"/put?key={key}&value={value}")
         if key is None or value is None:
-            logger.info("Respond 400: key and value are required")
+            logger.debug("Respond 400: key and value are required")
             return web.Response(status=400, text="key and value are required")
-
-        leader = get_node_id(raftos.get_leader())
-        if leader != node_id:
-            logger.info(f"Respond 302: {leader}")
-            return web.Response(status=302, text=str(leader))
-
         await data.update({key: value})
-        logger.info("Respond 200: ok")
+        logger.debug("Respond 200: ok")
         return web.Response(text="ok")
 
     @routes.post('/compact_log')
+    @leader_required(node_id)
     async def compact_log(request: web.Request):
-        logger.info("/compact_log")
-        leader = get_node_id(raftos.get_leader())
-        if leader != node_id:
-            logger.info(f"Respond 302: {leader}")
-            return web.Response(status=302, text=str(leader))
-
+        logger.debug("/compact_log")
         await raftos.compact_log()
-        logger.info("Respond 200: ok")
+        logger.debug("Respond 200: ok")
         return web.Response(text="ok")
 
     app = web.Application()
     app.add_routes(routes)
     return app.make_handler()
 
-def main(node_id, node, cluster, log_base_dir, benchmark):
+def run_coordinator_node(coordinator, cluster, log_base_dir, benchmark):
+    log_dir = os.path.join(log_base_dir, 'coordinator')
+    os.makedirs(log_dir)
+    logging.basicConfig(
+        filename=os.path.join(log_dir, 'logging.log'),
+        format=u'[%(asctime)s %(filename)s:%(lineno)d %(levelname)s]  %(message)s',
+        level=logging.DEBUG if not benchmark else logging.ERROR
+    )
+
+    raftos.configure({
+        'log_path': log_dir,
+        'serializer': raftos.serializers.JSONSerializer
+    })
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(raftos.register_coordinator(coordinator, cluster))
+    loop.run_forever()
+
+def run_cluster_node(node_id, node, coordinator, cluster, log_base_dir, benchmark):
     log_dir = os.path.join(log_base_dir, f'node-{node_id}')
     os.makedirs(log_dir)
     logging.basicConfig(
@@ -95,7 +116,7 @@ def main(node_id, node, cluster, log_base_dir, benchmark):
     })
 
     loop = asyncio.get_event_loop()
-    loop.create_task(raftos.register(node, cluster=cluster))
+    loop.create_task(raftos.register(node, coordinator=coordinator, cluster=cluster))
     f = loop.create_server(setup_server(node_id), '127.0.0.1', HTTP_PORT + node_id)
     loop.run_until_complete(f)
     loop.run_forever()
@@ -113,14 +134,23 @@ if __name__ == '__main__':
         os.system(f"rm -rf {args.log_dir}")
     os.makedirs(args.log_dir)
 
-    cluster = [get_address(node_id) for node_id in range(args.num_nodes)]
+    cluster = [get_udp_address(node_id) for node_id in range(args.num_nodes + 1)]
+    coordinator, cluster = cluster[0], cluster[1:]
     processes = set()
     try:
+        # Cluster nodes
         for i, node in enumerate(cluster):
-            node_args = (i, node, cluster, args.log_dir, args.benchmark)
-            process = multiprocessing.Process(target=main, args=node_args)
+            node_args = (i + 1, node, coordinator, cluster, args.log_dir, args.benchmark)
+            process = multiprocessing.Process(target=run_cluster_node, args=node_args)
             process.start()
             processes.add(process)
+
+        # Coordinator node
+        node_args = (coordinator, cluster, args.log_dir, args.benchmark)
+        process = multiprocessing.Process(target=run_coordinator_node, args=node_args)
+        process.start()
+        processes.add(process)
+
         while processes:
             for process in tuple(processes):
                 process.join()
