@@ -1,14 +1,17 @@
 import asyncio
+import time
 
 from .log import logger
 from .conf import config
+from .time_record import record
 
 
 class UDPProtocol(asyncio.DatagramProtocol):
-    def __init__(self, queue, request_handler, loop, serializer=None, cryptor=None):
+    def __init__(self, queue, request_handler, loop, serializer=None, cryptor=None, delay=None):
         self.queue = queue
         self.serializer = serializer or config.serializer
         self.cryptor = cryptor or config.cryptor
+        self.delay = delay or 0
         self.request_handler = request_handler
         self.loop = loop
 
@@ -26,7 +29,9 @@ class UDPProtocol(asyncio.DatagramProtocol):
         asyncio.ensure_future(self.start(), loop=self.loop)
 
     def datagram_received(self, data, sender):
+        time.sleep(self.delay)
         data = self.serializer.unpack(self.cryptor.decrypt(data))
+        # record.receive(sender, data['type'])
         data.update({
             'sender': sender
         })

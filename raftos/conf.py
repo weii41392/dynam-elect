@@ -29,7 +29,9 @@ class Configuration:
 
             # Election callbacks
             'on_leader': lambda: None,
-            'on_follower': lambda: None
+            'on_follower': lambda: None,
+
+            'simulated_delay': lambda port: (port - 8000) * 1e-4
         }
 
     def configure(self, kwargs):
