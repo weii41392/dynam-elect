@@ -1,9 +1,11 @@
 import asyncio
 import functools
 
+from .conf import config
 from .log import logger
 from .network import UDPProtocol
 from .state import State
+from .time_record import record
 
 
 async def register(*address_list, coordinator=None, cluster=None, loop=None):
@@ -56,7 +58,8 @@ class Node:
         protocol = UDPProtocol(
             queue=self.requests,
             request_handler=self.request_handler,
-            loop=self.loop
+            loop=self.loop,
+            delay=config.simulated_delay(self.port)
         )
         address = self.host, self.port
         self.transport, _ = await asyncio.Task(
@@ -98,6 +101,7 @@ class Node:
             'data': data,
             'destination': destination
         })
+        # record.send(destination, data['type'])
 
     def broadcast(self, data):
         """Sends data to all Nodes in cluster (cluster list does not contain self Node)"""

@@ -31,6 +31,7 @@ class Configuration:
             'on_leader': lambda: None,
             'on_follower': lambda: None,
 
+            'simulated_delay': lambda port: (port - 8000) * 1e-4,
             'initial_leadership_duration': 2,
             'probability_choosing_longest': 0.5,
             'rtt_degradation_threshold': 3,
