@@ -21,7 +21,8 @@ def validate_term(func):
     def on_receive_function(self, data):
         if self.storage.term < data['term']:
             self.storage.update({
-                'term': data['term']
+                'term': data['term'],
+                "voted_for": None
             })
             if not isinstance(self, Follower):
                 self.state.to_follower()
