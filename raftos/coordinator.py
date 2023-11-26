@@ -130,8 +130,8 @@ class Coordinator:
         }
         asyncio.ensure_future(self.state.send(data, nominee), loop=self.loop)
         logger.debug(f"Send nominate_candidate RPC to {nominee} " \
-                     f"Duration: {self.duration}) "
-                     f"EMA: {self.ema_rtt_nodes})")
+                     f"Duration: {', '.join(map(lambda k: f'{k}: {self.duration[k]}', sorted(self.duration.keys())))} " \
+                     f"EMA: {', '.join(map(lambda k: f'{k}: {self.ema_rtt_nodes[k]}', sorted(self.ema_rtt_nodes.keys())))}")
 
     def abort_leadership(self):
         """Early abort a leader"""
@@ -218,9 +218,29 @@ class Coordinator:
 
     def update_duration(self, leader_id, \
                         temperature=config.duration_temperature):
-        x = self.ema_rtt_all / (self.ema_rtt_nodes[leader_id] + 1e-99)
-        m = 1.5 / (1 + math.exp(-temperature * (x - 1))) + 0.5
-        self.duration[leader_id] *= m
+        # x = self.ema_rtt_all / (self.ema_rtt_nodes[leader_id] + 1e-99)
+        # m = 1.5 / (1 + math.exp(-temperature * (x - 1))) + 0.5
+        # self.duration[leader_id] *= m
+
+        if not self.is_initial_rotation_over:
+            self.duration[leader_id] = config.post_rotation_leadership_duration
+            return
+
+        # Calculate performance by taking reciprocal of ema rtt
+        not_none_ema = {k: v for k, v in self.ema_rtt_nodes.items() if v is not None}
+        perfs = {k: 1 / (v + 1e-99) for k, v in not_none_ema.items()}
+        max_perf, min_perf = max(perfs.values()), min(perfs.values())
+
+        # Normalize performance to [0.8, 2] to get multipliers
+        multipliers = {
+            k: ((v - min_perf) / (max_perf - min_perf) - 0.5) * 1.2 + 1.4 \
+            for k, v in perfs.items()
+        }
+
+        # Update duration
+        self.duration = {
+            k: self.duration[k] * multipliers[k] for k in multipliers.keys()
+        }
 
     def handle_end_leadership(self):
         """Called when the current leader ends or we abort it"""
