@@ -32,8 +32,9 @@ class Configuration:
             'on_follower': lambda: None,
 
             'simulated_delay': lambda port: (port - 8000) * 1e-4,
-            'initial_leadership_duration': 2,
-            'probability_choosing_longest': 0.5,
+            'initial_leadership_duration': 10,
+            'post_rotation_leadership_duration': 60,
+            'probability_choosing_longest': 0.8,
             'rtt_degradation_threshold': 3,
             'ema_momentum': 2e-2,
             'duration_temperature': 2
