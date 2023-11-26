@@ -9,7 +9,7 @@ import raftos
 
 logger = logging.getLogger('raftos')
 
-# Coordinator: 0, Servers: 1 ~ N
+# Servers: 1 ~ N
 # HTTP Port: 9000 + Server ID
 # UDP Port: 8000 + Server ID
 HTTP_PORT = 9000
@@ -83,25 +83,7 @@ def setup_server(node_id):
     app.add_routes(routes)
     return app.make_handler()
 
-def run_coordinator_node(coordinator, cluster, log_base_dir, benchmark):
-    log_dir = os.path.join(log_base_dir, 'coordinator')
-    os.makedirs(log_dir)
-    logging.basicConfig(
-        filename=os.path.join(log_dir, 'logging.log'),
-        format=u'[%(asctime)s %(filename)s:%(lineno)d %(levelname)s]  %(message)s',
-        level=logging.DEBUG if not benchmark else logging.ERROR
-    )
-
-    raftos.configure({
-        'log_path': log_dir,
-        'serializer': raftos.serializers.JSONSerializer
-    })
-
-    loop = asyncio.get_event_loop()
-    loop.create_task(raftos.register_coordinator(coordinator, cluster))
-    loop.run_forever()
-
-def run_cluster_node(node_id, node, coordinator, cluster, log_base_dir, benchmark):
+def run_cluster_node(node_id, node, cluster, log_base_dir, benchmark):
     log_dir = os.path.join(log_base_dir, f'node-{node_id}')
     os.makedirs(log_dir)
     logging.basicConfig(
@@ -116,7 +98,7 @@ def run_cluster_node(node_id, node, coordinator, cluster, log_base_dir, benchmar
     })
 
     loop = asyncio.get_event_loop()
-    loop.create_task(raftos.register(node, coordinator=coordinator, cluster=cluster))
+    loop.create_task(raftos.register(node, cluster=cluster))
     f = loop.create_server(setup_server(node_id), '127.0.0.1', HTTP_PORT + node_id)
     loop.run_until_complete(f)
     loop.run_forever()
@@ -134,23 +116,14 @@ if __name__ == '__main__':
         os.system(f"rm -rf {args.log_dir}")
     os.makedirs(args.log_dir)
 
-    cluster = [get_udp_address(node_id) for node_id in range(args.num_nodes + 1)]
-    coordinator, cluster = cluster[0], cluster[1:]
+    cluster = [get_udp_address(node_id) for node_id in range(1, args.num_nodes + 1)]
     processes = set()
     try:
-        # Cluster nodes
         for i, node in enumerate(cluster):
-            node_args = (i + 1, node, coordinator, cluster, args.log_dir, args.benchmark)
+            node_args = (i + 1, node, cluster, args.log_dir, args.benchmark)
             process = multiprocessing.Process(target=run_cluster_node, args=node_args)
             process.start()
             processes.add(process)
-
-        # Coordinator node
-        node_args = (coordinator, cluster, args.log_dir, args.benchmark)
-        process = multiprocessing.Process(target=run_coordinator_node, args=node_args)
-        process.start()
-        processes.add(process)
-
         while processes:
             for process in tuple(processes):
                 process.join()

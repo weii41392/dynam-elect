@@ -8,22 +8,17 @@ from .state import State
 from .time_record import record
 
 
-async def register(*address_list, coordinator=None, cluster=None, loop=None):
+async def register(*address_list, cluster=None, loop=None):
     """Start Raft node (server)
     Args:
         address_list — 127.0.0.1:8000 [, 127.0.0.1:8001 ...]
-        coordinator  - 127.0.0.1.8001
-        cluster — [127.0.0.1:8002, 127.0.0.1:8003, ...]
+        cluster — [127.0.0.1:8001, 127.0.0.1:8002, ...]
     """
 
     loop = loop or asyncio.get_event_loop()
     for address in address_list:
         host, port = address.rsplit(':', 1)
         node = Node(address=(host, int(port)), loop=loop)
-        if coordinator:
-            host, port = coordinator.rsplit(':', 1)
-            port = int(port)
-            node.set_coordinator((host, port))
 
         for address in cluster:
             host, port = address.rsplit(':', 1)
@@ -47,7 +42,6 @@ class Node:
     def __init__(self, address, loop):
         self.host, self.port = address
         self.cluster = set()
-        self.coordinator = None
 
         self.loop = loop
         self.state = State(self)
@@ -79,9 +73,6 @@ class Node:
     @property
     def cluster_count(self):
         return len(self.cluster)
-
-    def set_coordinator(self, address):
-        self.coordinator = address
 
     def request_handler(self, data):
         self.state.request_handler(data)
