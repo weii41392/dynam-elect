@@ -49,7 +49,7 @@ class Configuration:
             self.step_down_interval * self.election_interval_spread
         )
 
-        self.wait_before_respond_vote_request = self.step_down_interval * 0.5
+        self.wait_before_respond_vote_request = self.step_down_interval * 0.2
         self.lower_bound_leadership_duration = self.initial_leadership_duration
 
         if isinstance(self.cryptor, type):

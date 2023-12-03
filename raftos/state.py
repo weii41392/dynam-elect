@@ -124,8 +124,6 @@ class BaseState:
 
     def on_receive_nominate_candidate(self, data):
         """NominateCandidate RPC — For a follower node to become a candidate
-        Arguments:
-            duration: leadership duration
 
         Receiver implementation:
             Become a candidate and take the duration as advantage in vote request stage.
@@ -144,6 +142,9 @@ class BaseState:
         Receiver implementation:
             Return a `heartbeat_response` RPC to coordinator
         """
+
+    def on_receive_get_duration_response(self, data):
+        """GetDuration RPC response"""
 
 class Leader(BaseState):
     """Raft Leader
@@ -424,9 +425,9 @@ class Candidate(BaseState):
         self.election_timer = Timer(self.election_interval, self.state.to_follower)
         self.vote_count = 0
 
-        self.duration = self.state.duration
+        self.duration = None
 
-    def start(self):
+    def __start(self):
         """Increment current term, vote for herself & send vote requests"""
         self.storage.update({
             'term': self.storage.term + 1,
@@ -436,6 +437,20 @@ class Candidate(BaseState):
         self.vote_count = 1
         self.request_vote()
         self.election_timer.start()
+
+    def start(self):
+        self.get_duration()
+
+    def get_duration(self):
+        """Send GetDuration RPC to coordinator"""
+        data = { "type": "get_duration" }
+        asyncio.ensure_future(self.state.send(data, self.state.coordinator), \
+                              loop=self.loop)
+
+    def on_receive_get_duration_response(self, data):
+        """GetDuration RPC response"""
+        self.duration = data['duration']
+        self.__start()
 
     def stop(self):
         self.election_timer.stop()
@@ -697,7 +712,6 @@ class Follower(BaseState):
         self.state.to_candidate()
 
     def on_receive_nominate_candidate(self, data):
-        self.state.duration = data['duration']
         self.state.to_candidate()
 
 
@@ -749,7 +763,6 @@ class State:
         self.state_machine = StateMachine(self.id)
 
         self.state = Follower(self)
-        self.duration = None
 
     def start(self):
         self.state.start()
