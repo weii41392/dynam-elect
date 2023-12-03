@@ -805,12 +805,12 @@ class State:
         return count > (self.server.cluster_count // 2)
 
     def to_candidate(self):
-        logger.info('Node {} becomes a candidate'.format(self.id))
+        logger.debug('Node {} becomes a candidate'.format(self.id))
         self._change_state(Candidate)
         self.set_leader(None)
 
     def to_leader(self):
-        logger.info('Node {} becomes a leader'.format(self.id))
+        logger.debug('Node {} becomes a leader'.format(self.id))
         self._change_state(Leader)
         self.set_leader(self.state)
         if asyncio.iscoroutinefunction(config.on_leader):
@@ -819,7 +819,7 @@ class State:
             config.on_leader()
 
     def to_follower(self):
-        logger.info('Node {} becomes a follower'.format(self.id))
+        logger.debug('Node {} becomes a follower'.format(self.id))
         self._change_state(Follower)
         self.set_leader(None)
         if asyncio.iscoroutinefunction(config.on_follower):

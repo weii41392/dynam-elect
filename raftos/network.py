@@ -12,6 +12,7 @@ class UDPProtocol(asyncio.DatagramProtocol):
         self.serializer = serializer or config.serializer
         self.cryptor = cryptor or config.cryptor
         self.delay = delay or 0
+        logger.info(f'Delay = {self.delay}')
         self.request_handler = request_handler
         self.loop = loop
 

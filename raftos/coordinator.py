@@ -101,8 +101,7 @@ class Coordinator:
             node: config.initial_leadership_duration \
             for node in self.state.cluster
         }
-        self.ema_rtt_all = None
-        self.ema_rtt_nodes = {
+        self.ema_rtt = {
             node: None for node in self.state.cluster
         }
 
@@ -118,7 +117,7 @@ class Coordinator:
         """Nominate a node to become a candidate"""
         def select_nominee():
             if not self.is_initial_rotation_over:
-                return self.initial_rotation.pop()
+                return self.initial_rotation[-1]
             if random.random() < config.probability_choosing_longest:
                 return max(self.duration, key=self.duration.get)
             return random.choice(self.state.cluster)
@@ -129,9 +128,8 @@ class Coordinator:
             'duration': self.duration[nominee]
         }
         asyncio.ensure_future(self.state.send(data, nominee), loop=self.loop)
-        logger.debug(f"Send nominate_candidate RPC to {nominee} " \
-                     f"Duration: {', '.join(map(lambda k: f'{k}: {self.duration[k]}', sorted(self.duration.keys())))} " \
-                     f"EMA: {', '.join(map(lambda k: f'{k}: {self.ema_rtt_nodes[k]}', sorted(self.ema_rtt_nodes.keys())))}")
+        logger.info(f"Send nominate_candidate RPC to {nominee}")
+        logger.info(f"Duration, EMA: {', '.join(map(lambda k: f'{k}: ({self.duration[k]}, {self.ema_rtt[k]})', sorted(self.duration.keys())))}")
 
     def abort_leadership(self):
         """Early abort a leader"""
@@ -141,7 +139,7 @@ class Coordinator:
             return
         data = { 'type': 'abort_leadership' }
         asyncio.ensure_future(self.state.send(data, leader_id), loop=self.loop)
-        logger.debug(f"Send abort_leadership RPC to {leader_id}")
+        logger.info(f"Send abort_leadership RPC to {leader_id}")
         self.handle_end_leadership()
 
     def heartbeat(self):
@@ -154,7 +152,6 @@ class Coordinator:
             return
         data = { 'type': 'heartbeat' }
         asyncio.ensure_future(self.state.send(data, leader_id), loop=self.loop)
-        # logger.debug(f"Send heartbeat to {leader_id}")
         self.heartbeat_sent_at = time.time()
         self.heartbeat_timer.reset()
 
@@ -167,24 +164,21 @@ class Coordinator:
         self.heartbeat_sent_at = None
 
         # Update EMA
-        self.ema_rtt_all = self.update_ema(self.ema_rtt_all, rtt)
-        self.ema_rtt_nodes[leader_id] = self.update_ema(
-            self.ema_rtt_nodes[leader_id], rtt)
+        self.ema_rtt[leader_id] = self.update_ema(self.ema_rtt[leader_id], rtt)
+        logger.debug(f"Receive heartbeat response from {data['sender']}, rtt = {rtt}, ema = {self.ema_rtt[leader_id]}")
 
-        logger.debug(f"Receive heartbeat response from {data['sender']}")
-        logger.debug(f"rtt / ema_rtt_all: {rtt / self.ema_rtt_all}, " \
-                     f"rtt / ema_rtt_node: {rtt / self.ema_rtt_nodes[leader_id]}")
-
-        # TODO: this is very unstable when the server has a heavy loading
-        # Maybe tune it when we have time
         # Early abort a leader when it performs poorly
-        # if self.is_initial_rotation_over and \
-        #     config.rtt_degradation_threshold * self.ema_rtt_all < rtt:
-        #     logger.debug("Leader is too slow. Aborting.")
-        #     self.abort_leadership()
+        if self.is_initial_rotation_over:
+            rtts = [v for v in self.ema_rtt.values() if v is not None]
+            if not rtts:
+                return
+            avg_rtt = sum(rtts) / len(rtts)
+            if avg_rtt * config.degradation_threshold < self.ema_rtt[leader_id]:
+                logger.info("Leader is too slow. Aborting.")
+                self.abort_leadership()
 
     def on_receive_start_leadership(self, data):
-        logger.debug(f"Receive StartLeadership RPC from {data['sender']}")
+        logger.info(f"Receive StartLeadership RPC from {data['sender']}")
         self.stop()
 
         # Abort current leader
@@ -194,6 +188,8 @@ class Coordinator:
 
         # Accept new leader
         sender_id = self.state.get_sender_id(data['sender'])
+        if not self.is_initial_rotation_over:
+            self.initial_rotation.remove(sender_id)
         self.state.set_leader(sender_id)
         self.abort_leadership_timer = Timer(
             self.duration[sender_id],
@@ -203,7 +199,7 @@ class Coordinator:
         self.heartbeat_timer.start()
 
     def on_receive_end_leadership(self, data):
-        logger.debug(f"Receive EndLeadership RPC from {data['sender']}")
+        logger.info(f"Receive EndLeadership RPC from {data['sender']}")
         leader_id = self.state.get_leader()
         sender_id = self.state.get_sender_id(data['sender'])
         if sender_id == leader_id:
@@ -216,31 +212,30 @@ class Coordinator:
             return new_value
         return (1 - momentum) * ema + momentum * new_value
 
-    def update_duration(self, leader_id, \
-                        temperature=config.duration_temperature):
-        # x = self.ema_rtt_all / (self.ema_rtt_nodes[leader_id] + 1e-99)
-        # m = 1.5 / (1 + math.exp(-temperature * (x - 1))) + 0.5
-        # self.duration[leader_id] *= m
+    def update_duration(self, leader_id):
+        if not self.is_initial_rotation_over or self.duration[leader_id] == \
+            config.initial_leadership_duration:
+            self.duration[leader_id] = config.post_rotation_leadership_duration
 
         if not self.is_initial_rotation_over:
-            self.duration[leader_id] = config.post_rotation_leadership_duration
             return
 
         # Calculate performance by taking reciprocal of ema rtt
-        not_none_ema = {k: v for k, v in self.ema_rtt_nodes.items() if v is not None}
-        perfs = {k: 1 / (v + 1e-99) for k, v in not_none_ema.items()}
+        perfs = {k: 1 / (v + 1e-99) for k, v in self.ema_rtt.items() if v is not None}
         max_perf, min_perf = max(perfs.values()), min(perfs.values())
 
-        # Normalize performance to [0.8, 2] to get multipliers
+        # Normalize performance to [0.5, 2] to get multipliers
         multipliers = {
-            k: ((v - min_perf) / (max_perf - min_perf) - 0.5) * 1.2 + 1.4 \
+            k: (v - min_perf) / (max_perf - min_perf + 1e-99) * 1.5 + 0.5 \
             for k, v in perfs.items()
         }
 
         # Update duration
-        self.duration = {
-            k: self.duration[k] * multipliers[k] for k in multipliers.keys()
-        }
+        for k, v in multipliers.items():
+            self.duration[k] = max(
+                config.lower_bound_leadership_duration,
+                self.duration[k] * v
+            )
 
     def handle_end_leadership(self):
         """Called when the current leader ends or we abort it"""
