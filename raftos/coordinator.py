@@ -123,13 +123,20 @@ class Coordinator:
             return random.choice(self.state.cluster)
 
         nominee = select_nominee()
-        data = {
-            'type': 'nominate_candidate',
-            'duration': self.duration[nominee]
-        }
+        data = { 'type': 'nominate_candidate' }
         asyncio.ensure_future(self.state.send(data, nominee), loop=self.loop)
         logger.info(f"Send nominate_candidate RPC to {nominee}")
         logger.info(f"Duration, EMA: {', '.join(map(lambda k: f'{k}: ({self.duration[k]}, {self.ema_rtt[k]})', sorted(self.duration.keys())))}")
+
+    def on_receive_get_duration(self, data):
+        """For a candidate to retrieve its up-to-date duration"""
+        sender_id = self.state.get_sender_id(data['sender'])
+        response = {
+            "type": "get_duration_response",
+            'duration': self.duration[sender_id]
+        }
+        asyncio.ensure_future(self.state.send(response, data['sender']), \
+                              loop=self.loop)
 
     def abort_leadership(self):
         """Early abort a leader"""
